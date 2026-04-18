@@ -2,19 +2,45 @@ import { insertIntradaySamples, upsertDaily } from "../db/vitals";
 import { getActivitySummary, getAzmSummary, getHeartRateIntraday } from "../fitbit/endpoints";
 import { getAccessToken } from "../token-store";
 import type { Env } from "../types";
+import { findOldestMissingIntradayDay } from "../util/backfill";
 import { localToUtcIso, todayInTimezone } from "../util/time";
 import { recordRateLimit } from "./common";
-import { runSteps } from "./run-steps";
+import { type CronStep, runSteps } from "./run-steps";
+
+// Matches the 7-day intraday retention window. Days older than this are archived
+// to R2 and permanently absent from the `vitals` table, so backfill cannot help.
+const BACKFILL_DAYS = 7;
 
 export async function runHighFrequency(env: Env): Promise<void> {
   const token = await getAccessToken(env);
-  const date = todayInTimezone(env.USER_TIMEZONE);
+  const today = todayInTimezone(env.USER_TIMEZONE);
 
-  await runSteps("high-frequency", [
-    { name: "heart_rate_intraday", run: () => fetchHeart(env, token, date) },
-    { name: "activity_summary", run: () => fetchActivity(env, token, date) },
-    { name: "azm_summary", run: () => fetchAzm(env, token, date) },
-  ]);
+  const steps: CronStep[] = [
+    { name: "heart_rate_intraday", run: () => fetchHeart(env, token, today) },
+    { name: "activity_summary", run: () => fetchActivity(env, token, today) },
+    { name: "azm_summary", run: () => fetchAzm(env, token, today) },
+  ];
+
+  try {
+    const missing = await findOldestMissingIntradayDay(
+      env.DB,
+      "heart_rate",
+      BACKFILL_DAYS,
+      today,
+      env.USER_TIMEZONE,
+    );
+    if (missing) {
+      steps.push({
+        name: `heart_rate_intraday[${missing}]`,
+        run: () => fetchHeart(env, token, missing),
+      });
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[cron:high-frequency] backfill lookup failed: ${msg}`);
+  }
+
+  await runSteps("high-frequency", steps);
 }
 
 async function fetchHeart(env: Env, token: string, date: string): Promise<void> {
