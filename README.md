@@ -170,7 +170,7 @@ Required GitHub repository secrets:
 
 | Secret | How to obtain |
 | :-- | :-- |
-| `CLOUDFLARE_API_TOKEN` | [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → use "Edit Cloudflare Workers" template, then add **D1 : Edit** and **R2 : Edit** on the same account. |
+| `CLOUDFLARE_API_TOKEN` | [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) → **Create Token** → use the "Edit Cloudflare Workers" template, then add **D1 : Edit** and **R2 Storage : Edit** on the same account. (The newer R2 SQL / R2 Data Catalog permissions are not required.) |
 | `CLOUDFLARE_ACCOUNT_ID` | Shown in the Cloudflare dashboard sidebar or via `wrangler whoami`. |
 
 Fitbit secrets (`FITBIT_CLIENT_ID` / `FITBIT_CLIENT_SECRET` / `FITBIT_REFRESH_TOKEN_SEED`) are
