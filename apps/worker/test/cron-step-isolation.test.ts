@@ -124,7 +124,8 @@ describe("runHighFrequency step isolation", () => {
     const env = createFakeEnv({ USER_TIMEZONE: "UTC" });
     stubFetchByUrl(() => undefined); // every call → 500 via fetch-mock default
 
-    await expect(runHighFrequency(env)).rejects.toThrow(/all 3 steps failed/);
+    // 3 today-steps + 1 backfill step (empty DB → every day in the 7-day window is missing).
+    await expect(runHighFrequency(env)).rejects.toThrow(/all 4 steps failed/);
   });
 });
 
