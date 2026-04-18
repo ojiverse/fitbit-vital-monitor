@@ -1,6 +1,6 @@
 # fitbit-vital-monitor
 
-[![CI/CD](https://github.com/OldBigBuddha/fitbit-vital-monitor/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/OldBigBuddha/fitbit-vital-monitor/actions/workflows/ci-cd.yml)
+[![CI/CD](https://github.com/ojiverse/fitbit-vital-monitor/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/ojiverse/fitbit-vital-monitor/actions/workflows/ci-cd.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Runs on Cloudflare](https://img.shields.io/badge/runs%20on-Cloudflare%20Workers-f38020.svg)](https://workers.cloudflare.com/)
 
