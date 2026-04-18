@@ -1,0 +1,33 @@
+{
+  "name": "@fitbit-vital-monitor/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test-workers/tsconfig.json",
+    "test": "pnpm test:unit && pnpm test:workers",
+    "test:unit": "vitest run -c vitest.config.ts",
+    "test:workers": "vitest run -c vitest.workers.config.ts",
+    "d1:create": "wrangler d1 create fitbit_vital_monitor",
+    "d1:migrate:local": "wrangler d1 migrations apply fitbit_vital_monitor --local",
+    "d1:migrate:remote": "wrangler d1 migrations apply fitbit_vital_monitor --remote",
+    "r2:create": "wrangler r2 bucket create fitbit-vital-monitor-archive",
+    "secret:put": "wrangler secret put"
+  },
+  "dependencies": {
+    "hono": "4.6.14",
+    "zod": "3.24.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.5.41",
+    "@cloudflare/workers-types": "4.20241230.0",
+    "@types/better-sqlite3": "7.6.12",
+    "better-sqlite3": "11.7.0",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8",
+    "wrangler": "3.99.0"
+  }
+}

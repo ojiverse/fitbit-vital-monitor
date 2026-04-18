@@ -1,0 +1,16 @@
+{
+  "name": "@fitbit-vital-monitor/scripts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bootstrap": "tsx bootstrap.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"(no tests for scripts)\" && exit 0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2"
+  }
+}

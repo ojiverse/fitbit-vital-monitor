@@ -1,0 +1,29 @@
+{
+  "name": "fitbit-vital-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Fitbit vitals wrapper, Prometheus exporter and GUI on Cloudflare Workers + D1.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "bootstrap": "pnpm --filter @fitbit-vital-monitor/scripts bootstrap",
+    "build:gui": "pnpm --filter @fitbit-vital-monitor/gui build",
+    "dev:worker": "pnpm --filter @fitbit-vital-monitor/worker dev",
+    "dev:gui": "pnpm --filter @fitbit-vital-monitor/gui dev",
+    "deploy:worker": "pnpm build:gui && pnpm --filter @fitbit-vital-monitor/worker run deploy",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "typescript": "5.7.2",
+    "vitest": "2.1.8",
+    "wrangler": "3.99.0"
+  }
+}
