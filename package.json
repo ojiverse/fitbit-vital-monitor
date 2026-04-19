@@ -12,6 +12,7 @@
   "scripts": {
     "bootstrap": "pnpm --filter @fitbit-vital-monitor/scripts bootstrap",
     "subscribe": "pnpm --filter @fitbit-vital-monitor/scripts subscribe",
+    "backfill:intraday": "pnpm --filter @fitbit-vital-monitor/scripts backfill:intraday",
     "build:gui": "pnpm --filter @fitbit-vital-monitor/gui build",
     "dev:worker": "pnpm --filter @fitbit-vital-monitor/worker dev",
     "dev:gui": "pnpm --filter @fitbit-vital-monitor/gui dev",
