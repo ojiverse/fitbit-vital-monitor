@@ -30,7 +30,12 @@ export async function insertIntradaySamples(
   samples: ReadonlyArray<IntradaySample>,
 ): Promise<void> {
   if (samples.length === 0) return;
-  const stmt = db.prepare("INSERT INTO vitals (timestamp, metric_type, value) VALUES (?, ?, ?)");
+  // `INSERT OR IGNORE` because the high-frequency cron refetches the whole
+  // day's intraday window every tick; the UNIQUE(metric_type, timestamp)
+  // index added in migration 0002 makes re-inserts a no-op.
+  const stmt = db.prepare(
+    "INSERT OR IGNORE INTO vitals (timestamp, metric_type, value) VALUES (?, ?, ?)",
+  );
   await db.batch(samples.map((s) => stmt.bind(s.timestamp, s.metricType, s.value)));
 }
 
