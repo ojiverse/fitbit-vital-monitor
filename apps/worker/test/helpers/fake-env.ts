@@ -19,6 +19,7 @@ export function createFakeEnv(overrides: Partial<Env> = {}): FakeEnv {
     FITBIT_CLIENT_ID: "test-client-id",
     FITBIT_CLIENT_SECRET: "test-client-secret",
     FITBIT_REFRESH_TOKEN_SEED: "seed-refresh-token",
+    FITBIT_SUBSCRIBER_VERIFY: "test-verify-token",
   };
   return { ...base, ...overrides } as FakeEnv;
 }

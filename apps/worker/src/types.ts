@@ -8,6 +8,7 @@ export type Env = {
   readonly FITBIT_CLIENT_ID: string;
   readonly FITBIT_CLIENT_SECRET: string;
   readonly FITBIT_REFRESH_TOKEN_SEED: string;
+  readonly FITBIT_SUBSCRIBER_VERIFY: string;
 };
 
 export type HonoEnv = { Bindings: Env };
