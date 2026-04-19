@@ -1,17 +1,18 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
 
-const MIGRATION_PATH = resolve(
-  new URL(".", import.meta.url).pathname,
-  "../../../../migrations/0001_initial.sql",
-);
+const MIGRATIONS_DIR = resolve(new URL(".", import.meta.url).pathname, "../../../../migrations");
 
 export type FakeD1 = D1Database & { readonly _raw: Database.Database };
 
 export function createFakeD1(): FakeD1 {
   const raw = new Database(":memory:");
-  raw.exec(readFileSync(MIGRATION_PATH, "utf8"));
+  for (const file of readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith(".sql"))
+    .sort()) {
+    raw.exec(readFileSync(resolve(MIGRATIONS_DIR, file), "utf8"));
+  }
   const d1 = adaptDatabase(raw);
   return Object.assign(d1, { _raw: raw });
 }

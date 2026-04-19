@@ -36,6 +36,23 @@ describe("db/vitals", () => {
     expect(latest.find((r) => r.metricType === "steps")?.value).toBe(100);
   });
 
+  it("insertIntradaySamples is idempotent on (metric_type, timestamp) so re-runs are no-ops", async () => {
+    const db = createFakeD1();
+    const samples = [
+      { timestamp: "2024-06-15T00:00:00.000Z", metricType: "heart_rate" as const, value: 60 },
+      { timestamp: "2024-06-15T00:01:00.000Z", metricType: "heart_rate" as const, value: 61 },
+    ];
+    await insertIntradaySamples(db, samples);
+    await insertIntradaySamples(db, samples);
+    const rows = await selectIntradayByDate(
+      db,
+      "heart_rate",
+      "2024-06-15T00:00:00.000Z",
+      "2024-06-16T00:00:00.000Z",
+    );
+    expect(rows.map((r) => r.value)).toEqual([60, 61]);
+  });
+
   it("upsertDaily inserts then overwrites the same (date, metric_type)", async () => {
     const db = createFakeD1();
     await upsertDaily(db, "2024-06-15", "steps", 1000);
