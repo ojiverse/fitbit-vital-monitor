@@ -57,9 +57,11 @@ and [`docs/metrics.md`](./docs/metrics.md) for the Prometheus metrics catalog.
 - **Fitbit Developer** account with a **Personal** application:
   - OAuth 2.0 Application Type: `Personal` *(required — gives automatic Intraday API access)*
   - Callback URL: `http://localhost:48125/callback`
-  - **Subscriber** registered for the same app: dev.fitbit.com → your app → **Subscriber Endpoints**
-    → set the URL to `https://<your-worker>.workers.dev/webhook/fitbit`. Fitbit will issue a
-    *Verification Code* — keep it for `FITBIT_SUBSCRIBER_VERIFY` below.
+  - **Subscriber** created for the same app: dev.fitbit.com → your app → **Subscriber Endpoints**
+    → create a Subscriber **without filling in the endpoint URL yet**. Fitbit issues a
+    *Subscriber ID* (numeric) and a *Verification Code* — keep both. The URL is added later in
+    step 5, *after* the Worker is deployed, so Fitbit's first verification GET hits a live
+    `/webhook/fitbit` route.
 
 ## Getting started
 
@@ -103,11 +105,20 @@ pnpm deploy:worker   # builds the GUI then runs `wrangler deploy`
 
 > `pnpm deploy` is a pnpm built-in — use `deploy:worker` or `pnpm run deploy:worker`.
 
-### 5. Register Fitbit Subscription webhooks (one time, after deploy)
+### 5. Verify the Subscriber endpoint and register Subscriptions
 
-Once the Worker is live, register the `sleep` / `activities` / `body` subscriptions so Fitbit
-starts pushing notifications to `/webhook/fitbit`. Pass an access token (printed by `pnpm
-bootstrap`) and the **Subscriber ID** from the Fitbit Developer portal:
+Now that the Worker is live, point Fitbit at it and register the per-collection subscriptions.
+
+**5a. Add the endpoint URL in the Fitbit Developer portal.** Open your Subscriber from the
+Prerequisites step and set its endpoint URL to
+`https://<your-worker>.workers.dev/webhook/fitbit` (Type: `JSON`). Fitbit immediately sends a
+verification `GET /webhook/fitbit?verify=<code>`; the Worker matches it against
+`FITBIT_SUBSCRIBER_VERIFY` and returns 204. The endpoint should turn green / **Verified**. If it
+stays red, the secret value doesn't match the portal's Verification Code — re-run
+`pnpm exec wrangler secret put FITBIT_SUBSCRIBER_VERIFY` and re-trigger verification.
+
+**5b. Register the `sleep` / `activities` / `body` subscriptions.** Pass an access token
+(printed by `pnpm bootstrap`) and the **Subscriber ID** from the portal:
 
 ```sh
 FITBIT_ACCESS_TOKEN=<access_token from bootstrap> \
@@ -141,16 +152,19 @@ pull frequency are independent.
 
 ### Upgrading an existing (cron-only) deployment to webhook-first
 
-If you deployed a pre-webhook version of this Worker, migrate without downtime in 3 steps. D1 /
-R2 / `auth_tokens` are untouched.
+If you deployed a pre-webhook version of this Worker, migrate without downtime. D1 / R2 /
+`auth_tokens` are untouched. The order matters: the Worker must be live with `/webhook/fitbit`
+*before* you register the endpoint URL on Fitbit's side, otherwise Fitbit's verification GET
+will hit the old worker (no such route → 404 → endpoint marked unverified).
 
-**1. Register a Subscriber Endpoint and grab the Verification Code (Fitbit side)**
+**1. Create a Subscriber on the Fitbit side — without an endpoint URL**
 
-[dev.fitbit.com/apps](https://dev.fitbit.com/apps) → your app → **Subscriber Endpoints** → add
-URL `https://<your-worker>.workers.dev/webhook/fitbit` (Type: `JSON`). Note the issued
-**Verification Code** and the **Subscriber ID** (numeric).
+[dev.fitbit.com/apps](https://dev.fitbit.com/apps) → your app → **Subscriber Endpoints** →
+create a new Subscriber and **leave the endpoint URL field empty for now**. Copy the issued
+**Verification Code** and **Subscriber ID** (numeric). Filling the URL at this stage would
+trigger Fitbit's verification immediately against your still-old Worker, which would fail.
 
-**2. Add the new secret and deploy**
+**2. Add the new secret and deploy the new Worker**
 
 ```sh
 git pull
@@ -162,20 +176,30 @@ pnpm deploy:worker
 
 `wrangler.toml` cron schedules are unchanged at the time-slot level (`*/15`, `0 *`, `0 23`,
 `0 */4`); the deploy just swaps each handler for its slimmed-down replacement and exposes
-`/webhook/fitbit`.
+`/webhook/fitbit`. The secret takes effect immediately for new requests — no second deploy
+needed.
 
-**3. Verify the Subscriber and register Subscriptions**
+**3. Add the endpoint URL → Fitbit verifies → register Subscriptions**
 
-In the Fitbit portal, hit **Verify** on the Subscriber Endpoint — it should turn green. Then
-fetch the current access token from D1 and register the per-collection subscriptions (idempotent):
+Back in the Fitbit Developer portal, edit the Subscriber from step 1 and set the endpoint URL
+to `https://<your-worker>.workers.dev/webhook/fitbit`. Fitbit sends a verification GET against
+the now-live Worker — the endpoint should turn green / **Verified**. If it stays red, the
+secret value doesn't match the portal's Verification Code; re-set it with `pnpm exec wrangler
+secret put FITBIT_SUBSCRIBER_VERIFY` and re-trigger verification from the portal.
+
+Then fetch the current access token from D1 and register the per-collection subscriptions
+(idempotent):
 
 ```sh
-pnpm exec wrangler d1 execute fitbit_vital_monitor --remote \
-  --command="SELECT access_token FROM auth_tokens WHERE id=1"
+ACCESS_TOKEN=$(pnpm exec wrangler d1 execute fitbit_vital_monitor --remote \
+  --json --command="SELECT access_token FROM auth_tokens WHERE id=1" \
+  | jq -r '.[0].results[0].access_token')
 
-FITBIT_ACCESS_TOKEN=<that access_token> \
+FITBIT_ACCESS_TOKEN="$ACCESS_TOKEN" \
 FITBIT_SUBSCRIBER_ID=<subscriber id from Fitbit portal> \
 pnpm subscribe
+
+unset ACCESS_TOKEN
 ```
 
 Tail the Worker (`pnpm --filter @fitbit-vital-monitor/worker exec wrangler tail`) and sync your
