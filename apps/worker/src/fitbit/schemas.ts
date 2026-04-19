@@ -133,6 +133,15 @@ export const sleepSchema = z.object({
                 wake: z.object({ minutes: z.number() }).optional(),
               })
               .optional(),
+            data: z
+              .array(
+                z.object({
+                  dateTime: z.string(),
+                  level: z.string(),
+                  seconds: z.number(),
+                }),
+              )
+              .optional(),
           })
           .optional(),
       }),

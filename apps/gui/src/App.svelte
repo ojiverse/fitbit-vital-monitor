@@ -1,44 +1,39 @@
 <script lang="ts">
+  import { onMount, onDestroy } from "svelte";
   import Dashboard from "./routes/Dashboard.svelte";
-  import History from "./routes/History.svelte";
+  import { appState } from "./lib/app-state.svelte";
+  import { formatAge } from "./lib/format";
 
-  type Tab = "dashboard" | "history";
-  let tab = $state<Tab>("dashboard");
+  let tick = $state(0);
+  let ticker: ReturnType<typeof setInterval> | null = null;
 
-  function hashToTab(h: string): Tab {
-    return h === "#history" ? "history" : "dashboard";
-  }
-  if (typeof window !== "undefined") {
-    tab = hashToTab(window.location.hash);
-    window.addEventListener("hashchange", () => {
-      tab = hashToTab(window.location.hash);
-    });
-  }
+  onMount(() => {
+    ticker = setInterval(() => {
+      tick += 1;
+    }, 10_000);
+  });
+  onDestroy(() => {
+    if (ticker) clearInterval(ticker);
+  });
 
-  function pick(next: Tab) {
-    tab = next;
-    if (typeof window !== "undefined") {
-      window.location.hash = next === "dashboard" ? "" : `#${next}`;
-    }
-  }
+  const lastRefreshLabel = $derived.by(() => {
+    tick; // keep reactive against wall clock
+    const d = appState.lastRefreshedAt;
+    return d ? formatAge(d.toISOString()) : null;
+  });
 </script>
 
 <div class="app-shell">
   <header class="app-header">
-    <h1>fitbit-vital-monitor</h1>
-    <nav class="nav-tabs">
-      <button class:active={tab === "dashboard"} onclick={() => pick("dashboard")}>
-        Dashboard
-      </button>
-      <button class:active={tab === "history"} onclick={() => pick("history")}>
-        History
-      </button>
-    </nav>
+    <div class="app-header__brand">
+      <h1>fitbit-vital-monitor</h1>
+      {#if lastRefreshLabel}
+        <span class="app-header__updated" title={appState.lastRefreshedAt?.toLocaleString() ?? ""}>
+          最終更新 {lastRefreshLabel}
+        </span>
+      {/if}
+    </div>
   </header>
 
-  {#if tab === "dashboard"}
-    <Dashboard />
-  {:else}
-    <History />
-  {/if}
+  <Dashboard />
 </div>

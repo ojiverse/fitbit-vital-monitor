@@ -2,6 +2,7 @@ export type LatestSample = {
   readonly metricType: string;
   readonly timestamp: string;
   readonly value: number;
+  readonly meta?: string | null;
 };
 
 export type DeviceInfo = {
@@ -15,12 +16,6 @@ export type LatestResponse = {
   readonly intraday: ReadonlyArray<LatestSample>;
   readonly daily: ReadonlyArray<LatestSample>;
   readonly devices: ReadonlyArray<DeviceInfo>;
-};
-
-export type DailyPoint = {
-  readonly date: string;
-  readonly value: number;
-  readonly meta: string | null;
 };
 
 export type IntradayPoint = {
@@ -38,17 +33,6 @@ async function getJson<T>(url: string): Promise<T> {
 
 export function fetchLatest(): Promise<LatestResponse> {
   return getJson<LatestResponse>("/api/vitals/latest");
-}
-
-export async function fetchDaily(
-  metric: string,
-  from: string,
-  to: string,
-): Promise<ReadonlyArray<DailyPoint>> {
-  const res = await getJson<{ points: ReadonlyArray<DailyPoint> }>(
-    `/api/vitals/daily?metric=${encodeURIComponent(metric)}&from=${from}&to=${to}`,
-  );
-  return res.points;
 }
 
 export async function fetchIntraday(

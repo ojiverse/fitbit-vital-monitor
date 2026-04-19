@@ -43,6 +43,14 @@ export type HrvSummary = {
   readonly deepRmssd: number | null;
 };
 
+export type SleepStageKey = "deep" | "light" | "rem" | "wake";
+
+export type SleepSegment = {
+  readonly startIso: string;
+  readonly seconds: number;
+  readonly level: SleepStageKey;
+};
+
 export type SleepSummary = {
   readonly durationSeconds: number;
   readonly efficiency: number;
@@ -54,6 +62,7 @@ export type SleepSummary = {
     readonly rem: number;
     readonly wake: number;
   };
+  readonly segments: ReadonlyArray<SleepSegment>;
 };
 
 export type WeightLog = {
@@ -208,6 +217,13 @@ export async function getSleep(
   const main = parsed.sleep.find((s) => s.isMainSleep) ?? parsed.sleep[0];
   if (!main) return { data: null, rateLimit: res.rateLimit };
   const stages = main.levels?.summary ?? {};
+  const segments: ReadonlyArray<SleepSegment> = (main.levels?.data ?? [])
+    .map((d) => {
+      const level = normalizeSleepLevel(d.level);
+      if (!level) return null;
+      return { startIso: d.dateTime, seconds: d.seconds, level };
+    })
+    .filter((s): s is SleepSegment => s !== null);
   return {
     data: {
       durationSeconds: Math.round(main.duration / 1000),
@@ -220,9 +236,29 @@ export async function getSleep(
         rem: (stages.rem?.minutes ?? 0) * 60,
         wake: (stages.wake?.minutes ?? 0) * 60,
       },
+      segments,
     },
     rateLimit: res.rateLimit,
   };
+}
+
+// Fitbit reports classic (asleep/restless/awake) and stages (deep/light/rem/wake)
+// schemas depending on tracker. Collapse the classic levels onto the stages space.
+function normalizeSleepLevel(raw: string): SleepStageKey | null {
+  switch (raw) {
+    case "deep":
+    case "light":
+    case "rem":
+    case "wake":
+      return raw;
+    case "asleep":
+      return "light";
+    case "restless":
+    case "awake":
+      return "wake";
+    default:
+      return null;
+  }
 }
 
 export async function getWeightLog(
