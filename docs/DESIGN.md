@@ -47,14 +47,21 @@
 4. スクリプトが認可コードを Fitbit のトークンエンドポイントへ送信し、初回の `access_token` / `refresh_token` / `fitbit_user_id` / `scope` を取得して標準出力に表示する。
 5. ユーザーが `wrangler secret put FITBIT_REFRESH_TOKEN_SEED` 等で Secrets に投入する。
 6. `wrangler deploy` でデプロイする。
-7. 初回の Cron 起動時、Worker は D1 の `auth_tokens` が空であれば Secret の seed を用いて refresh を実行し、得られたトークンを D1 に保存する。以降は D1 上のトークンのみで動作する (Secret は再参照されない)。
+7. 初回の Cron 起動時、Worker は `TokenStore` Durable Object のローカルストレージが空であれば Secret の seed を用いて refresh を実行し、得られたトークンを DO ストレージに保存する (副次的に D1 `auth_tokens` にもミラーする)。
+
+#### トークン保存レイヤー
+- **正本 (authoritative)**: `TokenStore` Durable Object のローカルストレージ (`singleton` 名で 1 インスタンス)。強整合で、D1 ネットワーク書き込みの失敗が rotation 損失に直結しない。
+- **ミラー**: D1 `auth_tokens` テーブル。`wrangler d1 execute ... SELECT` で中の状態を観測する用途、および旧デプロイからの初回読み取り互換のために保持する。ミラー書き込み失敗は致命ではなく、次回 refresh 時に自己修復される。
+- **フォールバック順**: (1) DO ストレージ → (2) D1 ミラー (移行用に 1 度だけ) → (3) Secret seed
+
+#### 自動リカバリ (seed fallback)
+保存済みの refresh_token が Fitbit に `401` / `403` で拒否された場合、Worker は自動的に `FITBIT_REFRESH_TOKEN_SEED` で 1 回だけリトライする。これにより「Fitbit 側で rotation 済み、こちら側は旧 token のまま」というデッドロック状態から運用オペレーションなしで復帰できる。seed と保存 token が同一の場合はループを避けるためにリトライしない。
 
 #### 再ブートストラップが必要なケース
-- D1 を誤って消去した
 - Fitbit 側で連携を revoke された
-- 長期間 Worker が停止し refresh_token が失効した
+- seed も保存 token も共に失効した (長期停止後など)
 
-これらの場合はローカルで bootstrap スクリプトを再実行し、新しい seed を `wrangler secret put` で上書きしたうえで D1 の `auth_tokens` 行を削除する。
+これらの場合はローカルで bootstrap スクリプトを再実行し、新しい seed を `wrangler secret put FITBIT_REFRESH_TOKEN_SEED` で上書きする。DO ストレージと D1 ミラーの双方を明示的にクリアする必要がある場合は、D1 行の `DELETE FROM auth_tokens WHERE id = 1` を実行した上で `TokenStore` の `delete` (DO への管理 API を別途用意するか、DO を再作成する) を行う。
 
 ### 4.2. 共通取得ルーチン (Shared Ingestion Routine)
 Cron (§5) と Webhook (§4.4) のいずれから呼び出された場合も、最終的なデータ取り込みは以下の共通ルーチンを通る。実装上は `apps/worker/src/ingest/` 配下に取得関数群を集約し、cron ハンドラと webhook ハンドラはどちらもこの関数を呼ぶ薄いディスパッチャになる。
@@ -283,7 +290,7 @@ Cloudflare Workers の Secrets として以下を保存する。
 
 ### 8.3. OAuth フロー
 - Bootstrap スクリプトでは Authorization Code Grant + PKCE を採用する。Implicit Grant は使用しない。
-- `refresh_token` は使い切り仕様 (`fitbit-api.md` §3.2) のため、Worker 側では D1 に保存された最新値のみを使用し、Secret の seed は D1 が空のときのみ参照する。
+- `refresh_token` は使い切り仕様 (`fitbit-api.md` §3.2) のため、Worker 側では Durable Object ストレージに保存された最新値を正本として使用する。Secret の seed は (a) DO ストレージと D1 ミラーの双方が空の初回起動時、および (b) 保存済み token が Fitbit に拒否された場合の自動リカバリ時 (§4.1 参照) に参照される。
 
 ### 8.4. その他の制約
 - **Fitbit API レートリミット**: 1 ユーザーにつき 150 リクエスト / 時。本設計では ~16 req/h 程度に抑え、429 リトライや手動操作の余地を残す。
