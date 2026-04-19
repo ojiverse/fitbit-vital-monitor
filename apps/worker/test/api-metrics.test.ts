@@ -5,6 +5,7 @@ import { upsertRateLimit } from "../src/db/rate-limit";
 import { upsertToken } from "../src/db/tokens";
 import { insertIntradaySamples, upsertDaily } from "../src/db/vitals";
 import type { HonoEnv } from "../src/types";
+import { addDays, todayInTimezone } from "../src/util/time";
 import { createFakeEnv } from "./helpers/fake-env";
 
 function buildApp() {
@@ -50,10 +51,11 @@ describe("GET /metrics", () => {
       endIso: "2024-06-15T07:00:00.000Z",
       stages: { deep: 3600, light: 14400, rem: 7200, wake: 1800 },
     };
-    // seed for yesterday so the metrics handler finds it within its lookback window
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const ymd = yesterday.toISOString().slice(0, 10);
+    // Seed for "yesterday" in the same timezone the handler queries against
+    // (env.USER_TIMEZONE = Asia/Tokyo). Using UTC date arithmetic here makes
+    // the assertion flaky between 15:00 UTC (= 00:00 JST next day) and
+    // midnight UTC, when the test's "yesterday" lags the handler's by 1 day.
+    const ymd = addDays(todayInTimezone(env.USER_TIMEZONE), -1);
     await upsertDaily(env.DB, ymd, "sleep_duration", 28800, meta);
     const res = await buildApp().request("/metrics", {}, env);
     const body = await res.text();
