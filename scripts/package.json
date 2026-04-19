@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "bootstrap": "tsx bootstrap.ts",
+    "subscribe": "tsx subscribe.ts",
     "typecheck": "tsc --noEmit",
     "test": "echo \"(no tests for scripts)\" && exit 0"
   },

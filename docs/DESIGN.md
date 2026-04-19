@@ -32,7 +32,7 @@
 1. **Fitbit Web API**: データソース。OAuth 2.0 (Authorization Code Grant + PKCE) を用いて認可する。
 2. **Cloudflare Workers**: バックエンドロジック。
    - **Cron Triggers**: 複数の頻度で Fitbit API からデータを取得し DB に保存するバッチ処理 (詳細は §5)。
-   - **HTTP Fetch**: クライアント (ブラウザ、Prometheus) からのリクエストを処理する API サーバー。すべて公開・読み取り専用。
+   - **HTTP Fetch**: クライアント (ブラウザ、Prometheus) からのリクエストを処理する API サーバー。公開・読み取り専用エンドポイントと、Fitbit からの Subscription 通知を受ける webhook エンドポイント (§7.4) を含む。
 3. **ローカル Bootstrap スクリプト**: デプロイ前にユーザーのローカル環境で OAuth フローを完走し、初回の `refresh_token` を取得するための CLI ツール。デプロイ済み Worker からは独立。
 4. **Cloudflare D1**: メインデータベース。バイタルデータの時系列および OAuth トークン情報を保存する。
 
@@ -56,15 +56,18 @@
 
 これらの場合はローカルで bootstrap スクリプトを再実行し、新しい seed を `wrangler secret put` で上書きしたうえで D1 の `auth_tokens` 行を削除する。
 
-### 4.2. データ収集フロー (Ingestion - Cron)
-1. Cron Trigger が起動する (ジョブごとに頻度が異なる。詳細は §5)。
-2. `auth_tokens` から現在のトークンを取得。`expires_at` と現在時刻を比較し、失効間近 (例: 残り 30 分未満) であれば `refresh_token` を用いて更新する。
-3. 取得したトークンで Fitbit API の対象エンドポイント群を呼び出す。日付パラメータは `USER_TIMEZONE` (`wrangler.toml` の var、デフォルト `Asia/Tokyo`) で確定したローカル日付を用いる。
-4. 取得データを D1 に保存する:
+### 4.2. 共通取得ルーチン (Shared Ingestion Routine)
+Cron (§5) と Webhook (§4.4) のいずれから呼び出された場合も、最終的なデータ取り込みは以下の共通ルーチンを通る。実装上は `apps/worker/src/ingest/` 配下に取得関数群を集約し、cron ハンドラと webhook ハンドラはどちらもこの関数を呼ぶ薄いディスパッチャになる。
+
+1. `auth_tokens` から現在のトークンを取得。`expires_at` と現在時刻を比較し、失効間近 (例: 残り 30 分未満) であれば `refresh_token` を用いて更新する。
+2. 取得したトークンで Fitbit API の対象エンドポイント群を呼び出す。日付パラメータは `USER_TIMEZONE` (`wrangler.toml` の var、デフォルト `Asia/Tokyo`) で確定したローカル日付を用いる。
+3. 取得データを D1 に保存する:
    - 生の intraday データは `vitals` テーブルに `INSERT`
    - 日次集計は `vitals_daily` テーブルに `UPSERT`
-5. レスポンスヘッダ `Fitbit-Rate-Limit-*` の値を `rate_limit_state` テーブルに記録する。
-6. トークンを Refresh した場合は `auth_tokens` を `UPDATE` する (refresh_token もローテーションされるため必ず上書き)。
+4. レスポンスヘッダ `Fitbit-Rate-Limit-*` の値を `rate_limit_state` テーブルに記録する。
+5. トークンを Refresh した場合は `auth_tokens` を `UPDATE` する (refresh_token もローテーションされるため必ず上書き)。
+
+呼び出し側 (cron / webhook) は「どの fetch 群を、どの日付で起動するか」のみを決定する。
 
 ### 4.2.1. 初回 Backfill
 初回 cron 起動時 (= D1 の `vitals_daily` が空の場合)、過去のデータを一括取得して履歴を初期化する。
@@ -74,25 +77,64 @@
 - **レートリミット配慮**: 1 回の cron で全 backfill を行うとクォータを瞬間的に消費するため、3〜4 回に分割して実行する
 
 ### 4.3. データ提供フロー (Serving - HTTP Fetch)
-すべての公開エンドポイントは認証なしの読み取り専用。バイタルデータは公開を許容する設計判断である (§8 参照)。
+GUI / Prometheus 向けの公開エンドポイントは認証なしの読み取り専用。バイタルデータは公開を許容する設計判断である (§8 参照)。
 
 - **GUI / ポートフォリオからのアクセス**: Workers が D1 から最新値および日次サマリを取得し、JSON 形式で返す。CORS は `*` を許可する。
 - **Prometheus からのアクセス**: `/metrics` へのアクセスに対し、D1 の最新値を Prometheus exposition フォーマット (text/plain) に変換して返す。
 
+### 4.4. イベント駆動取得フロー (Ingestion - Webhook)
+Fitbit Subscription API の push 通知を **一次取得経路** として用いる。`fitbit-api.md` §2 の通り通知本体にはデータ実体が含まれないため、「どのコレクションが更新されたか」をトリガーにして Worker 側が Fitbit から GET し直す方式となる。
+
+#### フロー
+1. Fitbit から `POST /webhook/fitbit` に通知が届く (ボディは更新コレクション + ユーザー ID の配列のみ)。
+2. Worker は `X-Fitbit-Signature` ヘッダを検証する (`HMAC-SHA1(body, CLIENT_SECRET)` の Base64)。失敗時は `401` を返して処理を打ち切る。
+3. 検証成功時は即座に `204 No Content` を返し (Fitbit の 3 秒タイムアウト対策)、実データの GET は `ctx.waitUntil` でバックグラウンド実行する。
+4. バックグラウンド処理は §4.2 と同じ取得ルーチン (トークン取得 → Fitbit GET → D1 upsert → rate limit 記録) を再利用する。cron と webhook で取得コードを 1 本に統合する。
+5. Subscription の登録は Fitbit の `POST /1/user/-/{collection}/apiSubscriptions/{subscriptionId}.json` を bootstrap スクリプトから呼ぶ。`subscriberId` は Fitbit Developer ポータルで事前に登録する。
+6. Subscriber 登録時に Fitbit は `GET /webhook/fitbit?verify=<token>` で verification challenge を送る。`verify` 値が Secret `FITBIT_SUBSCRIBER_VERIFY` と一致すれば `204`、不一致なら `404` を返す (Fitbit 仕様)。
+
+#### コレクション → Fetch 群のディスパッチ表
+
+通知 1 件あたり、対応する fetch 群をまとめて起動する。**`sleep` 通知は「起床後にクラウドが各種データを finalize したシグナル」と解釈し、Subscription 非対応の wake-up confirmed 系メトリクス (HRV / 皮膚温 / カーディオスコア / 呼吸数 / SpO2) も同じトリガーで取得する。** これにより post-wake cron を webhook 駆動に置き換えられる。
+
+| 受信コレクション | 起動する fetch | 取得メトリクス | 対象日付 |
+| :--- | :--- | :--- | :--- |
+| `sleep` | `getSleep` | `sleep_duration` / `sleep_efficiency` / `sleep_start` / `sleep_end` (+ stage segments を `meta` に保存) | 前日 (USER_TIMEZONE) |
+| `sleep` (opportunistic) | `getHrv` / `getSkinTemp` / `getCardioScore` / `getBreathingRate` / `getSpo2Daily` | `hrv_rmssd` / `hrv_deep_rmssd` / `skin_temperature_relative` / `cardio_score` / `breathing_rate` / `spo2` | 前日 |
+| `activities` | `getActivitySummary` / `getAzmSummary` | `steps` / `distance` / `calories` / `floors` / `azm_total` / `azm_fat_burn` / `azm_cardio` / `azm_peak` | 当日 |
+| `body` | `getWeightLog` | `weight` / `body_fat` / `bmi` | 当日 |
+| `foods` | (本プロジェクトでは未使用) | — | — |
+
+Subscription 通知に含まれる `date` フィールドは更新が発生した日 (= 通知時点の Fitbit ローカル日付) を意味する。`sleep` の場合 Worker 側では「前日」を当日として取得し直す (起床は当日朝、対象の睡眠は前夜のため)。
+
+#### 冪等性とリプレイ
+Fitbit 側で重複・順序保証はないため、Worker 側で「同じ日付・メトリクスを何度 upsert しても結果が同じ」状態を保つ。`vitals_daily` は `PRIMARY KEY (date, metric_type)` の UPSERT で担保済み。リプレイ攻撃が成立しても結果は idempotent な再書き込みに留まる。
+
 ## 5. Cron ジョブ設計
 
-レートリミット 150 req/h/user の予算配分を考慮し、頻度の異なる複数の Cron ジョブで構成する (詳細は `metrics.md` §3)。
+データ取得の **一次経路は webhook (§4.4)**。Cron は (a) webhook 化できない intraday 心拍、(b) Subscription 通知が来ないデバイス情報、(c) webhook 取りこぼしのための日次フォールバック、の 3 つの役割に絞る。
 
-| Job | 頻度 | 対象 | コスト (req/h) |
-| :--- | :--- | :--- | ---: |
-| High-frequency | 15 分 | 心拍 (intraday), アクティビティ (intraday), AZM | 12 |
-| Hourly | 1 時間 | 呼吸数, SpO2 (intraday), デバイス情報 | 3 |
-| Post-wake | 1 日 (8:00 JST) | 睡眠, HRV, 皮膚温, カーディオスコア, 安静時心拍 | ~0.2 |
-| Body | 4 時間 | 体重, 体組成 | 0.25 |
-| Token refresh | 必要時 (~7h ごと) | OAuth refresh | ~0.15 |
-| **合計** | | | **~16 req/h** |
+| Job | 頻度 | 対象 | 役割 | コスト (req/h) |
+| :--- | :--- | :--- | :--- | ---: |
+| High-frequency | 15 分 | 心拍 (intraday) | 一次取得 (webhook 化不能) | 4 |
+| Hourly | 1 時間 | デバイス情報 | 一次取得 (webhook 通知なし) | 1 |
+| Daily fallback | 1 日 (8:00 JST) | sleep / activities / body / wake-up confirmed 系全般 | webhook 取りこぼし検知 | ~0.5 |
+| Token refresh | 必要時 (~7h ごと) | OAuth refresh | — | ~0.15 |
+| **合計** | | | | **~6 req/h** |
 
-クォータの使用率は ~10%。429 リトライや UI からの ad-hoc リクエストにも余裕を残す。
+#### Webhook 化前後のコスト変化
+| 項目 | Before | After |
+| :--- | ---: | ---: |
+| High-frequency cron 内 fetch 数 | 心拍 + activity + AZM = 3 メトリクス × 4回/h = 12 req/h | 心拍のみ × 4 = 4 req/h |
+| Hourly cron 内 fetch 数 | 呼吸数 + SpO2 + デバイス = 3 req/h | デバイスのみ = 1 req/h |
+| Body cron (4h) | 体重 = 0.25 req/h | 廃止 (webhook 化) |
+| Post-wake cron (1日) | sleep + HRV + 皮膚温 + cardio = 0.2 req/h | Daily fallback に統合 |
+| **小計** | ~15.4 req/h | ~5.5 req/h |
+
+クォータ使用率は ~4%。一次経路を webhook に寄せたことで cron 起因の req/h は約 1/3 になり、ad-hoc リクエストや 429 リトライにも余裕がある。Webhook 起因のリクエストは更新発生時のみなので長期平均でも cron 比で大幅に少ない。
+
+#### Daily fallback の責務
+8:00 JST に 1 回起動し、`vitals_daily` を走査して「直近 N 日間で値が欠けている日」を検出した場合のみ Fitbit を叩いて補完する (`util/backfill.ts` の既存ロジックを流用)。すべて揃っていればリクエストを発行しないため、平常時はほぼ 0 req。Webhook が安定して届いていれば fallback は実質的に no-op になる。
 
 ## 6. データベース設計 (Database Schema - D1)
 
@@ -176,7 +218,7 @@ Fitbit API のレートリミットヘッダを記録し、運用メトリクス
 
 ## 7. API エンドポイント仕様 (Endpoints)
 
-すべて公開・認証なし・読み取り専用。書き込み系エンドポイント (`POST` / `PUT` / `DELETE`) および OAuth 関連エンドポイントは存在しない。
+GUI / Prometheus 向けエンドポイントはすべて公開・認証なし・読み取り専用。唯一の例外は Fitbit からの Subscription 通知を受ける webhook (§7.4) で、これは HTTP メソッドとしては `POST` になるが、正当性は Fitbit の署名 (HMAC-SHA1) によって担保する (§8.1 参照)。OAuth 関連エンドポイントは存在しない。
 
 ### 7.1. GUI / ポートフォリオ向け API
 - **`GET /api/vitals/latest`**: 各メトリクスの最新値を JSON で返す。
@@ -195,12 +237,32 @@ Fitbit API のレートリミットヘッダを記録し、運用メトリクス
 
 設定変更系の画面 (`/setup`, `/settings`) は存在しない。設定はすべて `wrangler.toml` および Secrets で管理する。
 
+### 7.4. Fitbit Subscription Webhook
+Fitbit の Subscription API からの push 通知を受けて低レイテンシでデータを取り込むエンドポイント。認証は署名検証 (§8.1) で担保し、処理は短時間で完結させる。データ取り込みの実装ロジックは §4.2 の cron と共通で、対象日付のみ webhook 由来に差し替える。
+
+- **`POST /webhook/fitbit`**: Fitbit からの通知受信口。
+  - リクエストボディは更新があったコレクションとユーザー ID の配列のみで、データ実体は含まれない。
+  - ヘッダ `X-Fitbit-Signature` を `HMAC-SHA1(body, FITBIT_CLIENT_SECRET)` の Base64 値と比較して検証する。検証失敗時は `401` を返す。
+  - 検証成功時は即座に `204 No Content` を返し、実データの GET は `ctx.waitUntil` でバックグラウンド実行する (Fitbit 側のタイムアウトは 3 秒)。
+- **`GET /webhook/fitbit?verify=<token>`**: Fitbit Developer ポータルでの Subscriber 登録時に届く verification challenge。`token` が Secret `FITBIT_SUBSCRIBER_VERIFY` と一致すれば `204`、不一致なら `404` を返す (Fitbit 仕様)。
+
+本エンドポイントは CORS ヘッダを返さない (ブラウザから呼ぶ用途ではない)。
+
 ## 8. セキュリティと制約事項 (Security & Constraints)
 
 ### 8.1. 認証モデル
-- **書き込み系エンドポイント・OAuth エンドポイントは存在しない**。これにより認証保護が必要なエンドポイントが 0 になる。
+- **OAuth エンドポイントは存在しない**。ユーザー認証・セッション管理・書き込み系業務 API も存在しない。これにより通常の意味での「認証保護が必要なエンドポイント」は 0 になる。
 - 公開エンドポイント (`/api/*`, `/metrics`, GUI) は **すべて認証なし読み取り専用**。バイタルデータをポートフォリオ的に公開する用途を前提としたデザイン。
 - 個人情報を非公開にしたいユーザーは本システムの想定外。フォークしてアクセス制御を追加する必要がある。
+
+#### 例外: Fitbit Webhook (`POST /webhook/fitbit`)
+Subscription 通知の受信は HTTP メソッド上は書き込み (`POST`) だが、**Fitbit が `HMAC-SHA1(body, FITBIT_CLIENT_SECRET)` で署名した通知のみを受理**することで正当性を担保する。`CLIENT_SECRET` はサーバー側でしか保持できないため、事実上 Fitbit 以外は有効な通知を生成できない。
+
+この署名検証をもって「認証保護」の代替とする設計判断を採り、セッション・API キー・Bearer トークンなどの通常の認証機構は導入しない。したがって以下の前提が成立する:
+
+- 署名検証に失敗したリクエストは副作用なしで `401` を返して破棄する (D1 への書き込み、Fitbit API 呼び出し、いずれも発生させない)。
+- 通知本体にはデータ実体が含まれず、Worker 側は「どのコレクションが更新されたか」のシグナルとしてのみ使う。実データは Worker が自らトークンを用いて Fitbit から GET する。したがって署名偽装が仮に成功しても、攻撃者は「正規のデータを D1 に入れる」以上の悪用はできない (DoS については §8.4 のレートリミット配慮で吸収)。
+- リプレイ攻撃対策は署名に加え、`vitals_daily` の `PRIMARY KEY (date, metric_type)` による UPSERT 冪等性で実害を無効化する。
 
 ### 8.2. シークレット管理
 Cloudflare Workers の Secrets として以下を保存する。
@@ -208,8 +270,9 @@ Cloudflare Workers の Secrets として以下を保存する。
 | Secret | 用途 |
 | :--- | :--- |
 | `FITBIT_CLIENT_ID` | Fitbit OAuth クライアント ID。refresh 時に必要 |
-| `FITBIT_CLIENT_SECRET` | Fitbit OAuth クライアント秘密鍵。refresh 時に必要 |
+| `FITBIT_CLIENT_SECRET` | Fitbit OAuth クライアント秘密鍵。refresh 時、および webhook の署名検証鍵として使用 |
 | `FITBIT_REFRESH_TOKEN_SEED` | 初回 bootstrap 用の refresh_token (使い切り) |
+| `FITBIT_SUBSCRIBER_VERIFY` | Fitbit Developer ポータルで Subscriber 登録時に発行される verification code。`GET /webhook/fitbit?verify=<token>` のチャレンジ応答で一致確認に使う |
 
 ### 8.2.1. 環境変数 (`wrangler.toml [vars]`)
 秘匿性のない設定値は plain な vars として宣言する。
@@ -229,7 +292,6 @@ Cloudflare Workers の Secrets として以下を保存する。
 
 ## 9. 今後の拡張性 (Future Enhancements)
 
-- **Fitbit Subscription (Webhook) 統合**: cron polling の補完として `sleep` / `body` / `activities` のサブスクリプションを導入し、低レイテンシ反映とリクエスト削減を実現する (`metrics.md` §8 参照)。
 - **Grafana 連携テンプレート**: 標準的なダッシュボード JSON を同梱し、ユーザーがすぐに可視化を始められるようにする。
 - **アラートルールの同梱**: `metrics.md` §7 で定義したアラート群を Prometheus アラートルール YAML として配布する。
 - **エクスポート機能**: 蓄積データを CSV / JSON で一括ダウンロードできる機能を GUI に追加する。

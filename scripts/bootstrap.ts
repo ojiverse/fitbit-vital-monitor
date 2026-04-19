@@ -151,11 +151,20 @@ function printInstructions(token: TokenResponse): void {
   console.log("  2. Store the OAuth app credentials as secrets (once per app):");
   console.log("     wrangler secret put FITBIT_CLIENT_ID");
   console.log("     wrangler secret put FITBIT_CLIENT_SECRET");
-  console.log("  3. Run `wrangler deploy`.\n");
+  console.log(
+    "  3. Register a Subscriber in the Fitbit Developer portal, then store its verify code:",
+  );
+  console.log("     wrangler secret put FITBIT_SUBSCRIBER_VERIFY");
+  console.log("  4. Run `wrangler deploy`.");
+  console.log("  5. Register the webhook subscriptions against your deployed worker:");
+  console.log(
+    `     FITBIT_ACCESS_TOKEN=${token.access_token} FITBIT_SUBSCRIBER_ID=<subscriber-id> pnpm subscribe\n`,
+  );
   console.log("For local dev with `wrangler dev`, put the same values in apps/worker/.dev.vars:");
   console.log(`     FITBIT_CLIENT_ID=${process.env.FITBIT_CLIENT_ID}`);
   console.log("     FITBIT_CLIENT_SECRET=<your client secret>");
   console.log(`     FITBIT_REFRESH_TOKEN_SEED=${token.refresh_token}`);
+  console.log("     FITBIT_SUBSCRIBER_VERIFY=<verify code from Fitbit Developer portal>");
 }
 
 function base64UrlEncode(buf: Buffer): string {

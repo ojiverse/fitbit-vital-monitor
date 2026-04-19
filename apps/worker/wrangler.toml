@@ -3,14 +3,17 @@ main = "src/index.ts"
 compatibility_date = "2024-12-18"
 compatibility_flags = ["nodejs_compat"]
 
-# Cron schedules. The post-wake job uses UTC so the crontab must be shifted for your
-# USER_TIMEZONE: "0 23 * * *" fires 23:00 UTC = 08:00 JST. Edit if you change the timezone.
+# Cron schedules. Primary ingestion is Fitbit Subscription webhooks (see
+# DESIGN.md §4.4); cron remains for what webhooks cannot cover.
+# The daily-fallback job uses UTC, so the crontab must be shifted for your
+# USER_TIMEZONE: "0 23 * * *" fires 23:00 UTC = 08:00 JST. Edit if you change
+# the timezone.
 [triggers]
 crons = [
-  "*/15 * * * *", # High-frequency: heart rate / activity / AZM
-  "0 * * * *",    # Hourly: breathing rate / SpO2 / device info
-  "0 23 * * *",   # Post-wake: sleep / HRV / skin temp / cardio score / resting HR (08:00 JST)
-  "0 */4 * * *",  # Body: weight / body composition (also handles R2 archive sweep)
+  "*/15 * * * *", # High-frequency: heart rate intraday (no Subscription coverage)
+  "0 * * * *",    # Hourly: device info (no Subscription coverage)
+  "0 23 * * *",   # Daily fallback: webhook miss recovery for sleep/wake-up/activity/body (08:00 JST)
+  "0 */4 * * *",  # Body cron: R2 archive sweep only (weight is now webhook-driven)
 ]
 
 [vars]

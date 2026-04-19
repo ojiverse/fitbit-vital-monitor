@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runBody } from "../src/cron/body";
+import { runDailyFallback } from "../src/cron/daily-fallback";
 import { runHighFrequency } from "../src/cron/high-frequency";
-import { runPostWake } from "../src/cron/post-wake";
 import { runSteps } from "../src/cron/run-steps";
 import { insertIntradaySamples, selectDailyRange } from "../src/db/vitals";
 import { createFakeEnv } from "./helpers/fake-env";
@@ -65,49 +65,28 @@ describe("runSteps", () => {
 });
 
 describe("runHighFrequency step isolation", () => {
-  it("still records heart rate and activity when AZM returns 403", async () => {
+  it("still records same-day heart rate intraday when the backfill day fails", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const env = createFakeEnv({ USER_TIMEZONE: "UTC" });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : input.toString();
-        if (url.includes("/activities/heart/date/")) {
-          return new Response(
-            JSON.stringify({
+    stubFetchByUrl((url) => {
+      const date = url.match(/\/date\/(\d{4}-\d{2}-\d{2})/)?.[1] ?? "";
+      if (url.includes("/activities/heart/date/")) {
+        if (date === "2024-06-15") {
+          return {
+            body: {
               "activities-heart": [{ dateTime: "2024-06-15", value: { restingHeartRate: 58 } }],
               "activities-heart-intraday": { dataset: [{ time: "00:00:00", value: 60 }] },
-            }),
-            { status: 200, headers: rateLimitHeaders() },
-          );
+            },
+          };
         }
-        if (url.includes("/activities/active-zone-minutes/")) {
-          return new Response(
-            JSON.stringify({ errors: [{ errorType: "insufficient_permissions" }] }),
-            { status: 403, headers: rateLimitHeaders() },
-          );
-        }
-        if (url.includes("/activities/date/")) {
-          return new Response(
-            JSON.stringify({
-              summary: {
-                steps: 1234,
-                caloriesOut: 1500,
-                floors: 3,
-                distances: [{ activity: "total", distance: 1.2 }],
-              },
-            }),
-            { status: 200, headers: rateLimitHeaders() },
-          );
-        }
-        return new Response(`unexpected ${url}`, { status: 500 });
-      }),
-    );
+        // Backfill day fails (no stub match → 500)
+        return undefined;
+      }
+      return undefined;
+    });
 
     await runHighFrequency(env);
 
-    const steps = await selectDailyRange(env.DB, "steps", "2024-06-15", "2024-06-15");
-    expect(steps[0]?.value).toBe(1234);
     const resting = await selectDailyRange(
       env.DB,
       "heart_rate_resting",
@@ -115,49 +94,34 @@ describe("runHighFrequency step isolation", () => {
       "2024-06-15",
     );
     expect(resting[0]?.value).toBe(58);
-    const azm = await selectDailyRange(env.DB, "azm_total", "2024-06-15", "2024-06-15");
-    expect(azm).toEqual([]);
   });
 
-  it("throws when every Fitbit endpoint fails", async () => {
+  it("throws when every heart rate fetch fails", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const env = createFakeEnv({ USER_TIMEZONE: "UTC" });
-    stubFetchByUrl(() => undefined); // every call → 500 via fetch-mock default
-
-    // 3 today-steps + 1 backfill step (empty DB → every day in the 7-day window is missing).
-    await expect(runHighFrequency(env)).rejects.toThrow(/all 4 steps failed/);
+    stubFetchByUrl(() => undefined);
+    // 1 today step + 1 backfill step (empty DB → some day in 7-day window is missing).
+    await expect(runHighFrequency(env)).rejects.toThrow(/all 2 steps failed/);
   });
 });
 
-describe("runBody step isolation", () => {
-  it("still runs the R2 archive sweep when the weight endpoint fails", async () => {
+describe("runBody", () => {
+  it("archive sweep runs as the sole step (weight removed)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const env = createFakeEnv({ USER_TIMEZONE: "UTC" });
-    // Seed an old intraday row so the archive step has something to sweep.
     await insertIntradaySamples(env.DB, [
       { timestamp: "2024-06-01T10:00:00.000Z", metricType: "heart_rate", value: 55 },
     ]);
-
-    stubFetchByUrl((url) => {
-      if (url.includes("/body/log/weight/")) {
-        // Simulate a Fitbit 5xx for weight.
-        return undefined;
-      }
-      return undefined;
-    });
+    stubFetchByUrl(() => undefined);
 
     await runBody(env);
 
-    // weight step failed → no weight row
-    const weight = await selectDailyRange(env.DB, "weight", "2024-06-15", "2024-06-15");
-    expect(weight).toEqual([]);
-    // archive step still ran → old intraday row moved to R2 and deleted
     const archivedKeys = Array.from(env.ARCHIVE.store.keys());
     expect(archivedKeys).toEqual(["archive/2024-06-01.jsonl"]);
   });
 });
 
-describe("runPostWake step isolation", () => {
+describe("runDailyFallback step isolation", () => {
   it("records HRV/skin/cardio for yesterday even when the sleep endpoint fails, and still backfills", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const env = createFakeEnv({ USER_TIMEZONE: "UTC" });
@@ -178,10 +142,23 @@ describe("runPostWake step isolation", () => {
       if (url.includes("/cardioscore/")) {
         return { body: { cardioScore: [{ dateTime: date, value: { vo2Max: "38-40" } }] } };
       }
+      if (url.includes("/br/")) {
+        return { body: { br: [{ dateTime: date, value: { breathingRate: 13.8 } }] } };
+      }
+      if (url.includes("/spo2/")) {
+        return { body: { dateTime: date, value: { avg: 96, min: 92, max: 99 } } };
+      }
+      if (url.includes("/activities/date/")) {
+        return { body: { summary: { steps: 0, caloriesOut: 0, floors: 0, distances: [] } } };
+      }
+      if (url.includes("/active-zone-minutes/")) {
+        return { body: { "activities-active-zone-minutes": [] } };
+      }
+      if (url.includes("/body/log/weight/")) return { body: { weight: [] } };
       return undefined;
     });
 
-    await runPostWake(env);
+    await runDailyFallback(env);
 
     // Sleep failed for yesterday → no sleep_duration for 2024-06-14.
     const sleepYesterday = await selectDailyRange(
@@ -192,7 +169,7 @@ describe("runPostWake step isolation", () => {
     );
     expect(sleepYesterday).toEqual([]);
 
-    // But the other three endpoints for yesterday still landed.
+    // But the rest of the wake-up bundle for yesterday still landed.
     const hrvYesterday = await selectDailyRange(env.DB, "hrv_rmssd", "2024-06-14", "2024-06-14");
     expect(hrvYesterday[0]?.value).toBe(34);
     const skinYesterday = await selectDailyRange(
@@ -215,11 +192,3 @@ describe("runPostWake step isolation", () => {
     expect(hrvBackfill[0]?.value).toBe(34);
   });
 });
-
-function rateLimitHeaders(): Record<string, string> {
-  return {
-    "fitbit-rate-limit-limit": "150",
-    "fitbit-rate-limit-remaining": "140",
-    "fitbit-rate-limit-reset": "1200",
-  };
-}
