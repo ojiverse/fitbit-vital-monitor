@@ -10,6 +10,7 @@ export type LatestSample = {
   readonly metricType: string;
   readonly timestamp: string;
   readonly value: number;
+  readonly meta?: string | null;
 };
 
 export type DailyPoint = {
@@ -73,17 +74,18 @@ export async function selectAllLatest(db: D1Database): Promise<ReadonlyArray<Lat
 export async function selectLatestDaily(db: D1Database): Promise<ReadonlyArray<LatestSample>> {
   const rows = await db
     .prepare(
-      `SELECT metric_type, date AS timestamp, value FROM (
-         SELECT metric_type, date, value,
+      `SELECT metric_type, date AS timestamp, value, meta FROM (
+         SELECT metric_type, date, value, meta,
                 ROW_NUMBER() OVER (PARTITION BY metric_type ORDER BY date DESC) AS rn
          FROM vitals_daily
        ) WHERE rn = 1`,
     )
-    .all<{ metric_type: string; timestamp: string; value: number }>();
+    .all<{ metric_type: string; timestamp: string; value: number; meta: string | null }>();
   return rows.results.map((r) => ({
     metricType: r.metric_type,
     timestamp: r.timestamp,
     value: r.value,
+    meta: r.meta,
   }));
 }
 

@@ -45,6 +45,7 @@ async function fetchSleep(env: Env, token: string, date: string): Promise<void> 
     startIso: sleep.data.startIso,
     endIso: sleep.data.endIso,
     stages: sleep.data.stages,
+    segments: sleep.data.segments,
   };
   await upsertDaily(env.DB, date, "sleep_duration", sleep.data.durationSeconds, meta);
   await upsertDaily(env.DB, date, "sleep_efficiency", sleep.data.efficiency);
