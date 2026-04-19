@@ -6,6 +6,7 @@
   "scripts": {
     "bootstrap": "tsx bootstrap.ts",
     "subscribe": "tsx subscribe.ts",
+    "backfill:intraday": "tsx backfill-intraday.ts",
     "typecheck": "tsc --noEmit",
     "test": "echo \"(no tests for scripts)\" && exit 0"
   },

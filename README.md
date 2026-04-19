@@ -211,6 +211,25 @@ notifications arrive.
 > `DELETE /1/user/-/{collection}/apiSubscriptions/{id}.json` against Fitbit (small edit to
 > `scripts/subscribe.ts`).
 
+### Backfilling intraday data
+
+When the high-frequency cron misses a window (CPU limit, deploy outage, transient
+failure) and the gap is still inside Fitbit's 7-day intraday retention, replay it
+through `INSERT OR IGNORE`:
+
+```sh
+# Dry-run: prints SQL to stdout, applies nothing.
+pnpm backfill:intraday -- --date 2026-04-19 --from 20:00
+
+# Apply for real:
+pnpm backfill:intraday -- --date 2026-04-19 --from 20:00 --apply
+```
+
+The script reads the current `access_token` from D1, calls Fitbit's 1-minute
+intraday endpoint, filters to `[--from, --to]` (local time in `--tz`, default
+`Asia/Tokyo` / full day) and writes via `wrangler d1 execute --remote`. Existing
+rows are no-ops thanks to the `UNIQUE(metric_type, timestamp)` constraint.
+
 ### Re-bootstrapping
 
 If the `auth_tokens` row is lost, Fitbit revokes consent, or the Worker is idle long enough for
